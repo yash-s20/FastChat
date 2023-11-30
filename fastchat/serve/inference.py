@@ -2,25 +2,11 @@
 import abc
 import gc
 import json
-import math
 import os
-import sys
 import time
 from typing import Iterable, Optional, Dict
-import warnings
 
-import psutil
 import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    LlamaTokenizer,
-    LlamaForCausalLM,
-    AutoModel,
-    AutoModelForSeq2SeqLM,
-    T5Tokenizer,
-    AutoConfig,
-)
 from transformers.generation.logits_process import (
     LogitsProcessorList,
     RepetitionPenaltyLogitsProcessor,
@@ -29,7 +15,7 @@ from transformers.generation.logits_process import (
     TopPLogitsWarper,
 )
 
-from fastchat.conversation import get_conv_template, SeparatorStyle
+from fastchat.conversation import get_conv_template
 from fastchat.model.model_adapter import (
     load_model,
     get_conversation_template,
@@ -70,6 +56,8 @@ def generate_stream(
 ):
     if hasattr(model, "device"):
         device = model.device
+    # f_index = tokenizer.convert_tokens_to_ids('F')
+    # j_index = tokenizer.convert_tokens_to_ids('J')
 
     # Read parameters
     prompt = params["prompt"]
@@ -99,6 +87,7 @@ def generate_stream(
     input_ids = input_ids[-max_src_len:]
     output_ids = list(input_ids)
     input_echo_len = len(input_ids)
+    token_probs = [None] * len(input_ids)
 
     if model.config.is_encoder_decoder:
         if logprobs is not None:  # FIXME: Support logprobs for encoder-decoder models.
@@ -190,6 +179,7 @@ def generate_stream(
             tokens = [int(token) for token in indices.tolist()]
         token = tokens[0]
         output_ids.append(token)
+        token_probs.append(torch.softmax(logits[0, -1, :], dim=-1).cpu().numpy())
         if logprobs is not None:
             # Cannot use last_token_logits because logprobs is based on raw logits.
             token_logprobs.append(
@@ -205,9 +195,11 @@ def generate_stream(
         if i % stream_interval == 0 or i == max_new_tokens - 1 or stopped:
             if echo:
                 tmp_output_ids = output_ids
+                tmp_probs = token_probs
                 rfind_start = len_prompt
             else:
                 tmp_output_ids = output_ids[input_echo_len:]
+                tmp_probs = token_probs[input_echo_len:]
                 rfind_start = 0
 
             output = tokenizer.decode(
@@ -275,6 +267,7 @@ def generate_stream(
             if not partially_stopped:
                 yield {
                     "text": output,
+                    "probs": tmp_probs,
                     "logprobs": ret_logprobs,
                     "usage": {
                         "prompt_tokens": input_echo_len,
@@ -296,6 +289,7 @@ def generate_stream(
 
     yield {
         "text": output,
+        "probs": tmp_probs,
         "logprobs": ret_logprobs,
         "usage": {
             "prompt_tokens": input_echo_len,
@@ -528,7 +522,7 @@ def chat_loop(
                 judge_sent_end=judge_sent_end,
             )
             t = time.time()
-            outputs = chatio.stream_output(output_stream)
+            outputs = chatio.stream_output(output_stream, tokenizer)
             duration = time.time() - t
             conv.update_last_message(outputs.strip())
 

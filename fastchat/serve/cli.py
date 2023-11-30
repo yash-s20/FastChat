@@ -27,6 +27,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 import torch
+import matplotlib.pyplot as plt
 
 from fastchat.model.model_adapter import add_model_args
 from fastchat.modules.awq import AWQConfig
@@ -187,6 +188,60 @@ class ProgrammaticChatIO(ChatIO):
 
     def print_output(self, text: str):
         print(text)
+
+def get_token_ids(word, tokenizer):
+    possible_tokens = [word] + tokenizer.tokenize(word)
+    ids = [x for x in tokenizer.convert_tokens_to_ids(possible_tokens) if x != 0]
+    return ids
+
+class GraphingChatIO(SimpleChatIO):
+    def __init__(self, multiline: bool = False, tokens_to_graph=None):
+        super().__init__(multiline)
+        self.tokens = tokens_to_graph
+        if self.tokens is None:
+            self.tokens = []
+        self.probs = {token: [] for token in self.tokens}
+        self.dialogue_num = 0
+        print(self.tokens)
+
+
+    def stream_output(self, output_stream, tokenizer):
+        pre_probs = 0
+        pre = 0
+        for outputs in output_stream:
+            output_probs = outputs["probs"]
+            output_text = outputs["text"]
+            output_text = output_text.strip().split(" ")
+            now_probs = len(output_probs)
+            now = len(output_text) - 1
+            for i in range(pre_probs, now_probs):
+                for token in self.tokens:
+                    self.probs[token].append(sum([output_probs[i][tid] for tid in get_token_ids(token, tokenizer)], 0))
+            pre_probs = now_probs
+            if now > pre:
+                print(" ".join(output_text[pre:now]), end=" ", flush=True)
+                pre = now
+        for token, prob in self.probs.items():
+            plt.plot(prob, label=token)
+        plt.legend()
+        plt.savefig(f"dialogue{self.dialogue_num}_probs.png")
+        plt.xlabel("Token Position")
+        plt.ylabel("Probability")
+        plt.close()
+        # now in log scale for y axis
+        for token, prob in self.probs.items():
+            plt.plot(prob, label=token)
+        plt.yscale("log")
+        plt.legend()
+        plt.xlabel("Token Position")
+        plt.ylabel("Probability")
+        plt.savefig(f"dialogue{self.dialogue_num}_logprobs.png")
+        plt.close()
+        self.dialogue_num += 1
+
+        print(" ".join(output_text[pre:]), flush=True)
+        return " ".join(output_text)
+
 
 
 def main(args):
